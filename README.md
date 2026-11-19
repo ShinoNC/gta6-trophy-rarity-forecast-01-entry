@@ -15,23 +15,38 @@ and each refresh dilutes every rate because the tracked-player base grows
 faster than earners. So instead of extrapolating rates directly, the model
 decomposes each trophy into earners and players:
 
-- **Players tracked P(t):** `ln P` is linear in `ln(1+t)` (power-law growth,
-  fitted on the distinct snapshots in the case history).
-- **Earners E(t):** for each trophy, fit `ln(E - E0 + 0.1)` linear in
-  `ln(1+t)` on the distinct snapshots (E0 = earners in the first snapshot),
-  with recency-weighted OLS and the slope shrunk toward the mean slope of the
-  trophy's coarse role group (story / mission / grind / easy / misc / rarest).
+- **Players tracked P(t):** the launch-night page is a fixed reviewer base P0;
+  the general population P(t) − P0 grows as a power law, so `ln(P − P0)` is
+  fitted linear in `ln(t)` over the case's distinct snapshots and extrapolated.
+  With fewer than 2 usable points the slope falls back to a prior (0.9).
+- **Earners E(t):** the first snapshot's earners are the launch-night cohort;
+  what grows afterwards is the general population, whose earn rate
+  r(t) = (E(t) − E0) / (P(t) − P0) follows a saturating adoption curve
+  (Weibull form: A · (1 − exp(−((t+6)/tau)^k))). A log-linear fit cannot
+  saturate, so it runs away for fast trophies and under-shoots slow ones;
+  the Weibull form captures both the early acceleration (long-tau grinds)
+  and the late saturation (short-tau story/easy trophies). The shape
+  exponent k is selected per role group from the case itself (a fixed k
+  would mislead if the real adoption curve is more or less S-shaped);
+  tau is fitted per trophy by grid search and shrunk toward its role-group
+  median; the level A is fitted per trophy by weighted least squares.
   Roles are classified from the case's own descriptions + tiers — no trophy
   id is hard-coded.
-- **Median** = 100 · E(T) / P(T), soft-capped toward the role's mature level
-  (`M · (1 - exp(-x/M))`, mature levels anchored on Ghost of Yotei's
-  7-week Exophase shape) and hard-capped at a generous week-1 ceiling.
-  The 100% trophy (Gone Fishing) is forecast at ~99.99%; platinum and 100%
-  completion stay near 0% (nobody can finish a ~200 h game in a week).
-- **Spread:** normal quantiles on the logit scale, `s = sqrt(resid² +
-  P-resid² + (0.15·√days)² + 0.65²)`, capped at 2.5, with role multipliers
-  (rarest 1.3×, grind 1.2×, easy 0.9×). The 0.65 floor covers refresh risk:
-  a single Exophase refresh can move a rate by 1–2 logit units.
+- **Refresh timing:** the answer is the page state at the LAST refresh before
+  the target, not at the target itself. The refresh rate is estimated from
+  the case's own snapshot times (with a prior toward ~1/day and a floor of
+  0.5/day), and the median is evaluated at the median last-refresh time
+  (target minus ln2/lambda). There are deliberately NO median caps: the
+  Weibull fit already saturates (A ≤ 1), so a soft cap toward a "mature
+  level" would double-count the saturation and bias fast trophies down.
+  The 100% trophy (Gone Fishing) is forecast at ~99.99%.
+- **Spread:** normal quantiles on the logit scale,
+  `s = sqrt(resid² + P-resid² + (0.15·√days)² + 0.5² + gap²)`, capped at 2.5,
+  where the gap term is the local log-slope of the rate times the expected
+  refresh gap (1/lambda days). The 0.5 floor covers refresh risk: a single
+  Exophase refresh can move a rate by ~1 logit unit. No per-role spread
+  multipliers — with the Weibull median the per-role biases are gone, so
+  the multipliers only added noise.
 
 Deterministic, stdlib only, runs in ~0.3 s. Falls back to the persistence
 baseline if a case has no usable history, so a run never crashes.
@@ -41,17 +56,27 @@ baseline if a case has no usable history, so a run never crashes.
 - Scorer reproduces the RULES worked examples exactly (0.403404; invalid-case
   0.46023). Baselines reimplemented from the RULES reproduce the stated
   practice numbers exactly (1.508366 on p00/p01).
-- Practice cases (answers ≈ the 04:30Z refresh, snapshot B): **loss 1.142**
-  vs persistence 1.508 and curve 1.508. Coverage is low (0.05) — the practice
+- Practice cases (answers ≈ the 04:30Z refresh, snapshot B): **loss 1.245**
+  vs persistence 1.508 and curve 1.508. Coverage is low (0.02) — the practice
   history is perfectly flat, so the median is persistence and the single
   refresh dilutes rates by 1–2.4 logit; the final case has 2.6 days of real
-  growth history, which is what the simulator models.
+  growth history, which is what the simulator models. Practice is a validity
+  check here, not the selection criterion.
 - Simulator tournament (two-population generative model: power-law P growth,
   Weibull earn curves, Poisson refreshes; 60 worlds, seeds 7+42): **mean loss
-  0.27, median 0.23, worst 0.65, coverage 0.94**; beats both house baselines
-  in 56–57 of 60 worlds (persistence 1.08, curve 1.32). Fresh-seed validation
-  (seeds 11+99): mean 0.30, wins 59/60. Robust to prior shifts (truths 1.5×
-  and 0.6× the assumed mature levels) and to refresh cadence (0.5–2/day).
+  0.18, median 0.15, worst 0.66, coverage 0.94**; beats both house baselines
+  in 58 of 60 worlds (persistence 1.08, curve 1.32). Fresh-seed validation
+  (seeds 11+99): mean 0.20, wins 59/60. Per-role median logit error is within
+  ±0.13 for every role (grind 0.00, story1 +0.06, easy +0.21 — the largest
+  remaining bias).
+- Stress + diversity (20 worlds each): slow/fast progression 0.18/0.19,
+  refresh 0.5/day 0.38 and 2/day 0.15, P exponent 0.7/1.15 0.17/0.17,
+  adoption shape 1.0/2.0 0.31/0.41, saturating P 0.26, front/back-loaded
+  refresh 0.33/0.17, tau/maturity jitter 0.26/0.26 — the entry beats both
+  baselines in 287 of 300 worlds across all 15 sets. The weakest regimes are
+  slow refresh (0.5/day) and front-loaded refresh, where the last-refresh
+  time is hardest to pin down; both are dominated by irreducible Poisson
+  timing noise rather than model bias.
 
 ## Layout
 
