@@ -1,62 +1,55 @@
 """Forecast each GTA VI PS5 trophy's Exophase earn rate at the case target.
 
-v2. Same E/P decomposition as v1, re-tuned on the first post-launch-day
-Exophase snapshot (snapshot C, crawled 04:50Z Nov 20, ~29h after launch).
-What C showed, and what changed here:
+v3. A blend of two medians, following the standard forecasting practice of
+combining models rather than betting everything on one:
 
-  * The observed adoption curve is FLATTER than a Weibull with shape 1.5.
-    21 of 31 trophies with a non-zero rate at B (04:30Z Nov 19) had a LOWER
-    rate at C: new (mostly fresh) players keep joining, so the population
-    earn rate is diluted even as earners grow. A single cohort's adoption
-    curve may well be S-shaped, but the population curve the entry fits is
-    the convolution of that curve with a stream of new joiners, and the
-    convolution is flatter. A shape diagnostic (implied C refresh time
-    under each shape, robust to 2x tau-prior scaling) puts the effective
-    shape at ~0.75-1.0, and a backtest (fit on A+B, predict C) ranks
-    k=0.75 >= k=1.0 > k=1.25 > k=1.5. The default shape is therefore 1.0,
-    not 1.5: simulator tournaments across world shapes 0.75-2.0 show k=1.0
-    wins by ~0.25 when the true shape is <=1.0 and costs ~0.13 when it is
-    1.5, while k=0.75 pays a much larger downside if the shape is 1.5+.
-  * The shape grid gains 0.75 so the per-group vote can reach the flat end.
-  * The shape vote now needs >=3 usable points instead of >=4. The final
-    case will most likely hold 3 usable points (the B, C, D refreshes), so
-    with a threshold of 4 the vote would never fire there and the default
-    would decide everything. Three points give one residual degree of
-    freedom per trophy, and the vote pools that weak signal across the
-    whole role group; the 2x-margin guard still stops near-tie flips.
-    Simulator: vote-at-3 helps when the true shape is far from the
-    default (world shape 2.0: 0.65 -> 0.53 with k=1.0) and is neutral
-    when the default is right.
-  * The spread floor rises 0.5 -> 0.6. The real backtest under-covered badly
-    at 0.5 (coverage 0.31-0.55 vs 0.94-0.97 in the simulator): the real
-    world has misspecification the simulator cannot see (the dilution dip
-    above, refresh-time randomness). The simulator cost of 0.6 is <=0.015.
+  * E/P median (v2's approach): earners and players tracked separately.
+    P(t) - P0 grows as a power law; the general population's earn rate
+    r_i(t) follows a saturating Weibull adoption curve with a per-trophy
+    timescale pooled toward its role group. This is the model that handles
+    the growth-takeover regime: it beat the trend and persistence on the
+    second real-data backtest (fit A+B+C, predict D, 0.72 vs 0.98-1.25),
+    where the Friday player flood flipped early trophies from dilution to
+    explosive growth (Ch1 0.73% -> 7.99% in ~7h).
+  * Trend median (the house curve's approach, improved): per-trophy OLS of
+    logit(rate) on ln(1+t) over the case's distinct snapshots, with the
+    slope shrunk toward the role-group median slope. The plain house curve
+    won the first real-data backtest (fit A+B, predict C, 0.19-0.37) in the
+    dilution regime, where rates only fell; shrinkage is the improvement
+    over the house version (its unshrunk slopes overfit 2-3 points).
+  * The two medians are averaged in logit space (weight BLEND_W on E/P).
+    The blend hedges the regime question: if dilution continues, the trend
+    side pulls the forecast down; if growth takes over, the E/P side pulls
+    it up. On the two real-data backtests the blend matches the better
+    model in each regime instead of losing badly in one of them.
 
-Everything else is v1's model, unchanged:
+Why a blend, and why not "the top entries' method": the practice
+leaderboard's top entries cannot be studied -- all 7,026 other entries
+have their source withheld (ours is the only public one), and their
+practice losses (0.00005-0.08 vs 1.18 for the best honest model) are only
+reachable by embedding the known practice answers (the 04:30Z Nov 19
+refresh, public Exophase data) in the program: the practice cases contain
+a single launch-night page state, so no honest model can predict the
+refresh jump. That trick scores practice points and says nothing about
+the final case, which is a different case with its own history. The
+observable "crowd" method for the final is therefore the documented
+standard -- the direct trend -- and v3 follows it as one blend
+component, improved with shrinkage and evaluated at the median
+last-refresh time like the E/P median.
 
-  * P(t): players tracked. The launch-night page is a fixed reviewer base
-    P0; the general population P(t) - P0 grows as a power law, so ln(P - P0)
-    is fitted linear in ln(t) over the case's distinct snapshots.
-  * E_i(t): earners of trophy i. The first snapshot's earners are the
-    launch-night cohort; the general population's earn rate
-    r_i(t) = (E_i(t) - E_i(0)) / (P(t) - P0) follows a saturating Weibull
-    adoption curve A * (1 - exp(-((t+6)/tau)^k)). Tau is fitted per trophy
-    by grid search and shrunk toward its role-group median; the level A is
-    fitted per trophy by weighted least squares. Roles are classified from
-    the case's own trophy descriptions and tiers, never from trophy ids.
-    Levels are never blended toward a role median (role groups mix trophies
-    whose levels differ by orders of magnitude).
-  * Refresh timing: the answer is the page state at the LAST refresh before
-    the target. The refresh rate is estimated from the case's own snapshot
-    times, and the median is evaluated at the median last-refresh time
-    (target minus ln2/lambda); the spread carries the gap uncertainty as
-    well as the fits' residuals, a horizon term, and the floor.
+Spread: logit-normal, from the E/P fit residuals, the P-fit residual, a
+horizon term, a refresh-gap term, and a floor. The floor is 1.0 logit:
+both real-data backtests under-covered at 0.5-0.6 (coverage 0.31-0.55)
+because real refreshes jump further than any simulator's worlds, and
+raising the floor to 1.0 improved both backtests (0.72 -> 0.67,
+0.54 -> 0.52) at a small simulator cost.
 
-Safety: any failure in the model falls back to persistence (last rate,
-baseline spread) for that case, so a run never crashes and never writes an
-invalid file. Deterministic: no randomness, no dict-order dependence, fixed
-float order. Standard library only. Reads every *.in in $MAKEFUN_INPUT_DIR
-(else /input), writes <id>.out to $MAKEFUN_OUTPUT_DIR (else /output).
+The 100% trophy keeps its dedicated branch ([99.9, ..., 99.99]): the
+scorer clamps the truth to 99.99, so the median must sit there too.
+Any failure falls back to persistence, so a run never crashes and never
+writes an invalid file. Deterministic, stdlib only. Reads every *.in in
+$MAKEFUN_INPUT_DIR (else /input), writes <id>.out to $MAKEFUN_OUTPUT_DIR
+(else /output).
 """
 
 import json
@@ -75,52 +68,39 @@ OUTPUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
 Z = [-1.645, -0.674, 0.0, 0.674, 1.645]
 
-# Tunable constants. v2 changes vs v1: SHAPE_K 1.5 -> 1.0, SHAPE_GRID gains
-# 0.75, the shape vote fires at >=3 points (was >=4), S_FLOOR 0.5 -> 0.6.
-K_TAU = 0.25          # tau shrinkage: effective extra observations from the role median
-S_FLOOR = 0.6         # logit spread floor (refresh risk + misspecification;
-# the real backtest under-covered at 0.5 because the dilution dip is not in
-# the simulator; 0.6 costs <=0.015 in the simulator and buys real coverage)
+# Blend weight on the E/P median (1 - BLEND_W on the trend median).
+BLEND_W = 0.75
+# Trend slope shrinkage: effective extra observations from the role-group
+# median slope. With 2-4 distinct snapshots, unshrunk per-trophy slopes
+# are mostly noise; pooling toward the group slope is the edge over the
+# plain house curve.
+K_SLOPE = 1.0
+# E/P constants, carried from v2 (validated on both real backtests and the
+# simulator): shape 1.0 (the dilution-flattened effective shape), vote at
+# >=3 points, tau shrinkage 0.25.
+K_TAU = 0.25
+S_FLOOR = 1.0         # logit spread floor (see module docstring)
 S_HOR = 0.15          # horizon uncertainty, logit per sqrt-day
 S_MAX = 2.5           # spread cap
 S_GAP_MAX = 0.5       # cap on the refresh-gap spread term
 BETA_PRIOR = 0.9      # P-growth exponent fallback when <2 usable P points
-SHAPE_K = 1.0         # Weibull shape exponent of the adoption curve (default;
-# the per-group vote below selects from SHAPE_GRID instead when the case
-# has enough points to identify the shape)
+SHAPE_K = 1.0         # Weibull shape exponent (default; the per-group vote
+# selects from SHAPE_GRID instead when the case has enough points)
 SHAPE_GRID = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-# Role spread multipliers: all 1.0. Earlier versions widened grind/rarest and
-# narrowed easy to compensate for the old log-linear median's role biases;
-# with the Weibull median those biases are gone, and flattening the
-# multipliers improved every simulator set slightly. Only "first" (the 100%
-# trophy) keeps a special value, and it is handled by the dedicated branch
-# below, not by this table.
-SPREAD_MULT = {"rarest": 1.0, "grind": 1.0, "story1": 1.0, "story2": 1.0,
-               "story3": 1.0, "story4": 1.0, "final": 1.0, "mission": 1.0,
-               "easy": 1.0, "first": 0.05, "misc": 1.0}
-# No median caps: the Weibull fit already saturates (A <= 1, r <= 1), so a
-# soft cap toward a "mature level" would double-count the saturation and bias
-# fast trophies down. The only bound is clamp_pct (0.01-99.99).
-RECENCY = 1.0  # fit weights ramp 1 -> 1+RECENCY over snapshots
-# Tau grid for the Weibull fit (hours): log-spaced, 15h (same-day) to 4000h
-# (multi-month grinds). 33 points keep the search cheap and deterministic.
+RECENCY = 1.0         # fit weights ramp 1 -> 1+RECENCY over snapshots
+# Tau grid for the Weibull fit (hours): log-spaced 15h to 4000h, 33 points.
 TAU_GRID = [15.0 * (4000.0 / 15.0) ** (k / 32.0) for k in range(33)]
-# Prior tau per coarse role group (hours), used only when a group has no trophy
-# with enough points to fit tau from the case itself. From guide difficulty:
-# story chapters take hours-days, grinds take weeks, platinum ~200h of play.
 ROLE_TAU_PRIOR = {"story": 160.0, "grind": 400.0, "easy": 80.0,
                   "misc": 220.0, "rarest": 1500.0, "first": 1.0}
-# Coarse groups for TAU pooling: chapters share an adoption timescale even though
-# their levels differ, so taus pool across the story group; levels do not pool.
+# Coarse groups for pooling timescales and slopes. Chapters share an
+# adoption timescale even though their levels differ, so taus and slopes
+# pool across the story group; levels never pool.
 SHRINK_GROUP = {"story1": "story", "story2": "story", "story3": "story",
                 "story4": "story", "final": "story", "mission": "story",
                 "grind": "grind", "easy": "easy", "misc": "misc",
                 "rarest": "rarest", "first": "first"}
-# Refresh-rate prior: 1 pseudo-refresh over 1 pseudo-day (the observed cadence
-# is ~1/day); the estimate shrinks toward it when few refreshes are observed.
-# LAM_MIN floors the estimate: with only one refresh observed, the gap-based
-# estimate would crash toward 0 (no gaps seen yet), but a front-page game is
-# refreshed at least every couple of days, so the rate cannot be near 0.
+# Refresh-rate prior: 1 pseudo-refresh over 1 pseudo-day (observed cadence
+# ~1/day); LAM_MIN floors the estimate when few refreshes are observed.
 LAM_PRIOR_N = 1.0
 LAM_PRIOR_D = 1.0
 LAM_MIN = 0.5
@@ -164,10 +144,8 @@ def median(vals):
     return v[n // 2] if n % 2 else 0.5 * (v[n // 2 - 1] + v[n // 2])
 
 
-def ols(xs, ys, ws=None):
+def wols(xs, ys, ws):
     """Weighted least squares y ~ a + b*x. Returns (a, b, resid_sd)."""
-    if ws is None:
-        ws = [1.0] * len(xs)
     sw = sum(ws)
     mx = sum(w * x for w, x in zip(ws, xs)) / sw
     my = sum(w * y for w, y in zip(ws, ys)) / sw
@@ -240,13 +218,13 @@ def distinct_snapshots(case):
     return snaps, release
 
 
-def weib_z(t, tau, k=SHAPE_K):
+def weib_z(t, tau, k):
     """Saturating adoption shape at time t (hours) for timescale tau."""
     return 1.0 - math.exp(-((max(0.0, t) + 6.0) / tau) ** k)
 
 
-def fit_level(ts, ys, ws, tau, k=SHAPE_K):
-    """Weighted least squares for the level A given tau (through the origin)."""
+def fit_level(ts, ys, ws, tau, k):
+    """Weighted least squares for the level A given tau (through origin)."""
     zs = [weib_z(t, tau, k) for t in ts]
     szz = sum(w * z * z for w, z in zip(ws, zs))
     if szz <= 1e-12:
@@ -257,8 +235,8 @@ def fit_level(ts, ys, ws, tau, k=SHAPE_K):
     return a, sse
 
 
-def fit_tau(ts, ys, ws, k=SHAPE_K):
-    """Grid-search tau; returns (tau, A, sse) or None when the curve is flat at 0."""
+def fit_tau(ts, ys, ws, k):
+    """Grid-search tau; returns (tau, A, sse) or None when flat at 0."""
     if not ys or max(ys) <= 0.0:
         return None
     best = None
@@ -266,12 +244,11 @@ def fit_tau(ts, ys, ws, k=SHAPE_K):
         a, sse = fit_level(ts, ys, ws, tau, k)
         if best is None or sse < best[2]:
             best = (tau, a, sse)
-    return best if best is not None else None
+    return best
 
 
 def forecast_case(case):
     trophies = case["trophies"]
-    n = len(trophies)
     snaps, release = distinct_snapshots(case)
     target = parse_time(case["target"])
     t_target = (target - release).total_seconds() / 3600.0
@@ -289,10 +266,11 @@ def forecast_case(case):
             last_rates[tr["id"]] = 0.0 if r is None else r
 
     # ---- refresh rate from the case's own snapshot times ----
-    # Refreshes after the first one arrive as a Poisson process; the estimate
+    # Refreshes after the first arrive as a Poisson process; the estimate
     # counts them over the window after the first refresh, shrunk toward a
     # 1/day prior. The answer is the state at the last refresh before the
-    # target, whose median time is target - ln(2)/lambda.
+    # target, whose median time is target - ln(2)/lambda. Both medians are
+    # evaluated at that time, not at the target.
     lam_hat = 1.0
     if len(snaps) >= 2:
         t_first_refresh = snaps[1][0]
@@ -303,15 +281,17 @@ def forecast_case(case):
     t_med = t_target - 24.0 * math.log(2.0) / lam_hat
     t_last_snap = snaps[-1][0] if snaps else 0.0
     t_med = min(t_target, max(t_last_snap, t_med))
-    # ---- players tracked: ln(P - P0) ~ ln(t) (power-law growth of the
-    # general population on top of the fixed launch-night base P0) ----
+
+    # ---- players tracked: ln(P - P0) ~ ln(t) ----
+    # The launch-night page is a fixed reviewer base P0; the general
+    # population P(t) - P0 grows as a power law.
     p0 = snaps[0][1] if snaps else 0.0
     p_pred, p_resid = None, 0.0
     p_pts = [(math.log(t), math.log(p - p0)) for t, p, _ in snaps
              if t > 0.0 and p > p0]
     if len(p_pts) >= 2:
         ws = [1.0 + RECENCY * j / (len(p_pts) - 1) for j in range(len(p_pts))]
-        a, b, sd = ols([p[0] for p in p_pts], [p[1] for p in p_pts], ws)
+        a, b, sd = wols([p[0] for p in p_pts], [p[1] for p in p_pts], ws)
         b = max(0.0, b)
         p_pred = p0 + math.exp(a + b * math.log(max(1e-6, t_med)))
         p_resid = sd
@@ -327,7 +307,7 @@ def forecast_case(case):
 
     roles = [classify(tr) for tr in trophies]
 
-    # ---- per-trophy Weibull adoption fits ----
+    # ---- E/P median: per-trophy Weibull adoption fits ----
     # y_j = excess earners per general player at snapshot j: the general
     # population's earn rate, fitted as A * (1 - exp(-((t+6)/tau)^k)).
     fits = []
@@ -351,16 +331,11 @@ def forecast_case(case):
         fits.append({"e0": e0, "ts": ts, "ys": ys, "pgens": pgens, "ws": ws,
                      "role": roles[i]})
 
-    # shape vote per coarse group: the adoption exponent is a property of the
-    # process, pooled across the group; each trophy votes with its normalized
-    # fit quality (SSE over sum of squared y, so big and small trophies count
-    # alike) at each candidate shape. Trophies with >=3 usable points vote:
-    # three points give one residual degree of freedom each, and the group
-    # pools that weak signal across many trophies; the final case will most
-    # likely hold exactly 3 usable points, so a threshold of 4 would leave
-    # the vote silent there and the default would decide everything. The
-    # default 1.0 stands unless another shape wins by a 2x margin, so a
-    # near-tie cannot flip the shape.
+    # Shape vote per coarse group: the adoption exponent is a property of
+    # the process, pooled across the group; each trophy votes with its
+    # normalized fit quality at each candidate shape. Trophies with >=3
+    # usable points vote; the default 1.0 stands unless another shape wins
+    # by a 2x margin, so a near-tie cannot flip the shape.
     shape_by_group = {}
 
     def group_shape(role):
@@ -398,7 +373,6 @@ def forecast_case(case):
         f["tau_fit"] = fit_tau(f["ts"], f["ys"], f["ws"], f["k"]) \
             if len(f["ts"]) >= 2 else None
 
-    # role-group tau medians (from trophies with a real fit), else the prior
     def role_tau(role):
         grp = SHRINK_GROUP.get(role, role)
         vals = [f["tau_fit"][0] for f in fits
@@ -407,12 +381,15 @@ def forecast_case(case):
             return median(vals)
         return ROLE_TAU_PRIOR.get(grp, 200.0)
 
-    # final per-trophy (tau, A, residual) with tau shrunk toward the group median
-    preds = []
+    # Final per-trophy (tau, A, residual) with tau shrunk toward the group
+    # median. Levels are never blended toward a role median: role groups
+    # mix trophies whose levels differ by orders of magnitude, so pooling
+    # levels pulls rare trophies up badly. Only the timescale pools.
+    ep = []
     for f in fits:
         tau_grp = role_tau(f["role"])
         if not f["ts"]:
-            preds.append(None)
+            ep.append(None)
             continue
         if f["tau_fit"] is not None:
             npts = len(f["ts"])
@@ -422,8 +399,8 @@ def forecast_case(case):
         else:
             tau = tau_grp
         a, _ = fit_level(f["ts"], f["ys"], f["ws"], tau, f["k"])
-        # residual in log space, floored at half an earner so tiny counts do
-        # not dominate the spread
+        # Residual in log space, floored at half an earner so tiny counts do
+        # not dominate the spread.
         resids = []
         for t, y, pgen in zip(f["ts"], f["ys"], f["pgens"]):
             yhat = a * weib_z(t, tau, f["k"])
@@ -436,37 +413,79 @@ def forecast_case(case):
             sd = 0.0
         r_med = a * weib_z(t_med, tau, f["k"])
         e_pred = f["e0"] + p_gen_med * r_med
-        preds.append({"tau": tau, "a": a, "sd": sd, "e_pred": e_pred,
-                      "role": f["role"], "k": f["k"]})
+        ep.append({"tau": tau, "a": a, "sd": sd, "e_pred": e_pred,
+                   "role": f["role"], "k": f["k"]})
 
-    # NOTE on levels: there is deliberately NO blend toward a role-median level.
-    # Role groups mix trophies whose levels differ by orders of magnitude (gold =
-    # final mission ~30% vs 100% completion ~0%), so pooling levels pulls rare
-    # trophies up badly. Each trophy's level is anchored by its own observed data;
-    # only the adoption timescale tau is pooled across roles.
+    # ---- trend median: logit(rate) ~ ln(1+t), slope shrunk to the group ----
+    # The house curve's form, improved twice: fitted on distinct snapshots
+    # only (flat stretches of the step page carry no information and would
+    # overweight the oldest state), and the slope shrunk toward the
+    # role-group median slope (with 2-4 points, raw per-trophy slopes are
+    # mostly noise). Evaluated at t_med, like the E/P median.
+    trend = []
+    raw_slopes = {}
+    for i, tr in enumerate(trophies):
+        xs, ys = [], []
+        for t, p, rates in snaps:
+            r = rates[i]
+            if r is None:
+                continue
+            xs.append(math.log(1.0 + max(0.0, t)))
+            ys.append(logit_pct(r))
+        if len(xs) >= 2:
+            ws = [1.0 + RECENCY * j / (len(xs) - 1) for j in range(len(xs))]
+            a, b, _ = wols(xs, ys, ws)
+        else:
+            a, b, ws = (logit_pct(last_rates.get(tr["id"], 0.0)), 0.0,
+                        [1.0] * len(xs))
+        raw_slopes[i] = (b, len(xs))
+        trend.append({"xs": xs, "ys": ys, "ws": ws, "a": a, "b": b,
+                      "role": roles[i]})
+
+    def group_slope(role):
+        grp = SHRINK_GROUP.get(role, role)
+        vals = [raw_slopes[i][0] for i in range(len(trophies))
+                if SHRINK_GROUP.get(roles[i], roles[i]) == grp and raw_slopes[i][1] >= 2]
+        return median(vals) if vals else 0.0
+
+    trend_med = []
+    for i, td in enumerate(trend):
+        if len(td["xs"]) < 2:
+            trend_med.append(last_rates.get(trophies[i]["id"], 0.0))
+            continue
+        b_grp = group_slope(td["role"])
+        npts = len(td["xs"])
+        b_shrunk = (npts * td["b"] + K_SLOPE * b_grp) / (npts + K_SLOPE)
+        # Re-fit the intercept at the shrunk slope (weighted mean residual).
+        sw = sum(td["ws"])
+        a_shrunk = sum(w * (y - b_shrunk * x) for w, x, y in
+                       zip(td["ws"], td["xs"], td["ys"])) / sw
+        lg = a_shrunk + b_shrunk * math.log(1.0 + max(0.0, t_med))
+        trend_med.append(inv_logit_pct(lg))
 
     rows = []
     for i, tr in enumerate(trophies):
         tid = tr["id"]
         role = roles[i]
         last_rate = last_rates.get(tid, 0.0)
-        # the 100% trophy: it has been 100% in every snapshot; stay at ~100.
-        # The scorer clamps the truth to 99.99, so the median must sit there too:
-        # a median of 99.95 would already cost 1.6 logit units.
+        # The 100% trophy: it has been 100% in every snapshot; stay at ~100.
         if last_rate >= 99.99 and all(
                 (s[2][i] is not None and s[2][i] >= 99.99) for s in snaps):
             rows.append({"id": tid, "q": [99.9, 99.97, 99.99, 99.99, 99.99]})
             continue
-        pr = preds[i]
+        pr = ep[i]
         if pr is None:
-            # no usable history for this trophy: persistence + wide spread
+            # No usable history for this trophy: persistence + wide spread.
             med = last_rate
             spread = max(S_FLOOR, 0.5 * math.sqrt(horizon_days))
         else:
-            med = 100.0 * pr["e_pred"] / p_pred
-            # refresh-gap spread: the last refresh before the target is random
-            # (exponential gap, SD 1/lambda days); the rate moves with its local
-            # log-slope over that gap
+            med_ep = 100.0 * pr["e_pred"] / p_pred
+            # Logit-space blend of the two medians.
+            lg_blend = BLEND_W * logit_pct(med_ep) + (1.0 - BLEND_W) * logit_pct(trend_med[i])
+            med = inv_logit_pct(lg_blend)
+            # Refresh-gap spread: the last refresh before the target is
+            # random (exponential gap, SD 1/lambda days); the rate moves
+            # with its local log-slope over that gap.
             s_gap = 0.0
             if pr["a"] > 0.0:
                 t_hi = t_med + 12.0
@@ -479,14 +498,14 @@ def forecast_case(case):
             spread = math.sqrt(pr["sd"] * pr["sd"] + p_resid * p_resid
                                + (S_HOR * math.sqrt(horizon_days)) ** 2
                                + S_FLOOR ** 2 + s_gap * s_gap)
-            spread = min(S_MAX, spread * SPREAD_MULT.get(role, 1.0))
+            spread = min(S_MAX, spread)
         med = clamp_pct(med)
         lg = logit_pct(med)
         qs = []
         for z in Z:
             q = inv_logit_pct(lg + spread * z)
             qs.append(round4(min(100.0, max(0.0, q))))
-        # enforce non-decreasing (rounding can tie, never invert)
+        # Enforce non-decreasing (rounding can tie, never invert).
         for k in range(1, 5):
             if qs[k] < qs[k - 1]:
                 qs[k] = qs[k - 1]
@@ -495,7 +514,7 @@ def forecast_case(case):
 
 
 def fallback_case(case):
-    """Persistence baseline (house baseline) — never crashes, always valid."""
+    """Persistence baseline (house baseline) -- never crashes, always valid."""
     d = max(0.0, case["horizon_minutes"] / 1440.0)
     spread = 0.5 * math.sqrt(d)
     last = case["history"][-1] if case.get("history") else None
@@ -519,7 +538,7 @@ def main():
         case = json.loads(path.read_text(encoding="utf-8"))
         try:
             forecast = forecast_case(case)
-            # validate shape before writing: 1 row per trophy, 5 non-decreasing q in [0,100]
+            # Validate shape before writing: 1 row per trophy, 5 non-decreasing q in [0,100].
             ids = [row["id"] for row in forecast["trophies"]]
             assert len(ids) == len(case["trophies"]) and len(set(ids)) == len(ids)
             for row in forecast["trophies"]:
