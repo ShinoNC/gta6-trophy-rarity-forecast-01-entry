@@ -1,44 +1,62 @@
 """Forecast each GTA VI PS5 trophy's Exophase earn rate at the case target.
 
-Model (earn-rate decomposition). A trophy's rate is earners over players tracked:
-    rate_i(t) = E_i(t) / P(t).
-Exophase's page is a step function: flat between refreshes, jumping at each refresh,
-when new (mostly fresh) players join and dilute most rates. So instead of trending
-the rate itself, this program models the two counts separately:
+v2. Same E/P decomposition as v1, re-tuned on the first post-launch-day
+Exophase snapshot (snapshot C, crawled 04:50Z Nov 20, ~29h after launch).
+What C showed, and what changed here:
 
-  * P(t): players tracked. The launch-night page is a fixed reviewer base P0; the
-    general population P(t) - P0 grows as a power law, so ln(P - P0) is fitted
-    linear in ln(t) over the case's distinct snapshots and extrapolated.
-  * E_i(t): earners of trophy i. The first snapshot's earners are the launch-night
-    cohort; what grows afterwards is the general population, whose earn rate
-    r_i(t) = (E_i(t) - E_i(0)) / (P(t) - P0) follows a saturating adoption curve
-    (Weibull form: A * (1 - exp(-((t+6)/tau)^k))). A log-linear fit cannot
-    saturate, so it runs away for fast trophies and under-shoots slow ones;
-    the Weibull form captures both the early acceleration (long-tau grinds)
-    and the late saturation (short-tau story/easy trophies). The shape
-    exponent k is selected per role group from the case itself (a fixed k
-    would mislead if the real adoption curve is more or less S-shaped);
-    tau is fitted per trophy by grid search and shrunk toward its role-group
-    median (roles read from the case's own trophy descriptions and tiers);
-    the level A is fitted per trophy by weighted least squares.
+  * The observed adoption curve is FLATTER than a Weibull with shape 1.5.
+    21 of 31 trophies with a non-zero rate at B (04:30Z Nov 19) had a LOWER
+    rate at C: new (mostly fresh) players keep joining, so the population
+    earn rate is diluted even as earners grow. A single cohort's adoption
+    curve may well be S-shaped, but the population curve the entry fits is
+    the convolution of that curve with a stream of new joiners, and the
+    convolution is flatter. A shape diagnostic (implied C refresh time
+    under each shape, robust to 2x tau-prior scaling) puts the effective
+    shape at ~0.75-1.0, and a backtest (fit on A+B, predict C) ranks
+    k=0.75 >= k=1.0 > k=1.25 > k=1.5. The default shape is therefore 1.0,
+    not 1.5: simulator tournaments across world shapes 0.75-2.0 show k=1.0
+    wins by ~0.25 when the true shape is <=1.0 and costs ~0.13 when it is
+    1.5, while k=0.75 pays a much larger downside if the shape is 1.5+.
+  * The shape grid gains 0.75 so the per-group vote can reach the flat end.
+  * The shape vote now needs >=3 usable points instead of >=4. The final
+    case will most likely hold 3 usable points (the B, C, D refreshes), so
+    with a threshold of 4 the vote would never fire there and the default
+    would decide everything. Three points give one residual degree of
+    freedom per trophy, and the vote pools that weak signal across the
+    whole role group; the 2x-margin guard still stops near-tie flips.
+    Simulator: vote-at-3 helps when the true shape is far from the
+    default (world shape 2.0: 0.65 -> 0.53 with k=1.0) and is neutral
+    when the default is right.
+  * The spread floor rises 0.5 -> 0.6. The real backtest under-covered badly
+    at 0.5 (coverage 0.31-0.55 vs 0.94-0.97 in the simulator): the real
+    world has misspecification the simulator cannot see (the dilution dip
+    above, refresh-time randomness). The simulator cost of 0.6 is <=0.015.
+
+Everything else is v1's model, unchanged:
+
+  * P(t): players tracked. The launch-night page is a fixed reviewer base
+    P0; the general population P(t) - P0 grows as a power law, so ln(P - P0)
+    is fitted linear in ln(t) over the case's distinct snapshots.
+  * E_i(t): earners of trophy i. The first snapshot's earners are the
+    launch-night cohort; the general population's earn rate
+    r_i(t) = (E_i(t) - E_i(0)) / (P(t) - P0) follows a saturating Weibull
+    adoption curve A * (1 - exp(-((t+6)/tau)^k)). Tau is fitted per trophy
+    by grid search and shrunk toward its role-group median; the level A is
+    fitted per trophy by weighted least squares. Roles are classified from
+    the case's own trophy descriptions and tiers, never from trophy ids.
+    Levels are never blended toward a role median (role groups mix trophies
+    whose levels differ by orders of magnitude).
   * Refresh timing: the answer is the page state at the LAST refresh before
-    the target, not at the target itself. The refresh rate is estimated from
-    the case's own snapshot times, and the median is evaluated at the median
-    last-refresh time (target minus ln2/lambda); the spread carries the gap
-    uncertainty as well as the fits' residuals, a horizon term, and a FLOOR
-    that never vanishes (a refresh can move any rate by ~1 logit at any time).
+    the target. The refresh rate is estimated from the case's own snapshot
+    times, and the median is evaluated at the median last-refresh time
+    (target minus ln2/lambda); the spread carries the gap uncertainty as
+    well as the fits' residuals, a horizon term, and the floor.
 
-Roles are classified from the case data itself (description keywords + tier), never
-from trophy ids: story chapters by number, the final mission, the first mission
-(rate 100%), 100%-completion / platinum as rarest, grinds by "Complete N ..." /
-"100 locations" / "100 vehicles" / "Bank Vaults" phrasing, easy early activities
-(fishing, arcade, cocktail), everything else misc.
-
-Safety: any failure in the model falls back to persistence (last rate, baseline
-spread) for that case, so a run never crashes and never writes an invalid file.
-Deterministic: no randomness, no dict-order dependence, fixed float order.
-Standard library only. Reads every *.in in $MAKEFUN_INPUT_DIR (else /input),
-writes <id>.out to $MAKEFUN_OUTPUT_DIR (else /output).
+Safety: any failure in the model falls back to persistence (last rate,
+baseline spread) for that case, so a run never crashes and never writes an
+invalid file. Deterministic: no randomness, no dict-order dependence, fixed
+float order. Standard library only. Reads every *.in in $MAKEFUN_INPUT_DIR
+(else /input), writes <id>.out to $MAKEFUN_OUTPUT_DIR (else /output).
 """
 
 import json
@@ -57,28 +75,26 @@ OUTPUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
 Z = [-1.645, -0.674, 0.0, 0.674, 1.645]
 
-# Tunable constants (chosen on the offline simulator; see the skill file).
+# Tunable constants. v2 changes vs v1: SHAPE_K 1.5 -> 1.0, SHAPE_GRID gains
+# 0.75, the shape vote fires at >=3 points (was >=4), S_FLOOR 0.5 -> 0.6.
 K_TAU = 0.25          # tau shrinkage: effective extra observations from the role median
-S_FLOOR = 0.5         # logit spread floor (refresh risk; never vanishes).
-# Was 0.65 when the median came from a log-linear E fit; the Weibull median
-# is much better calibrated now, so the floor came down. The simulator alone
-# would push it to ~0.3, but the real adoption curve is not exactly Weibull
-# and the real refresh cadence may differ, so 0.5 keeps a margin for
-# misspecification the simulator cannot see (centre value, not argmax).
+S_FLOOR = 0.6         # logit spread floor (refresh risk + misspecification;
+# the real backtest under-covered at 0.5 because the dilution dip is not in
+# the simulator; 0.6 costs <=0.015 in the simulator and buys real coverage)
 S_HOR = 0.15          # horizon uncertainty, logit per sqrt-day
 S_MAX = 2.5           # spread cap
 S_GAP_MAX = 0.5       # cap on the refresh-gap spread term
 BETA_PRIOR = 0.9      # P-growth exponent fallback when <2 usable P points
-SHAPE_K = 1.5         # Weibull shape exponent of the adoption curve (default;
-# the per-group fit below selects from SHAPE_GRID instead when the case
+SHAPE_K = 1.0         # Weibull shape exponent of the adoption curve (default;
+# the per-group vote below selects from SHAPE_GRID instead when the case
 # has enough points to identify the shape)
-SHAPE_GRID = [1.0, 1.25, 1.5, 1.75, 2.0]
+SHAPE_GRID = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 # Role spread multipliers: all 1.0. Earlier versions widened grind/rarest and
 # narrowed easy to compensate for the old log-linear median's role biases;
-# with the Weibull median those biases are gone (grind ~0.00, story1 ~+0.06),
-# and flattening the multipliers improved every simulator set slightly.
-# Only "first" (the 100% trophy) keeps a special value, and it is handled by
-# the dedicated branch below, not by this table.
+# with the Weibull median those biases are gone, and flattening the
+# multipliers improved every simulator set slightly. Only "first" (the 100%
+# trophy) keeps a special value, and it is handled by the dedicated branch
+# below, not by this table.
 SPREAD_MULT = {"rarest": 1.0, "grind": 1.0, "story1": 1.0, "story2": 1.0,
                "story3": 1.0, "story4": 1.0, "final": 1.0, "mission": 1.0,
                "easy": 1.0, "first": 0.05, "misc": 1.0}
@@ -313,7 +329,7 @@ def forecast_case(case):
 
     # ---- per-trophy Weibull adoption fits ----
     # y_j = excess earners per general player at snapshot j: the general
-    # population's earn rate, fitted as A * (1 - exp(-((t+6)/tau)^1.5)).
+    # population's earn rate, fitted as A * (1 - exp(-((t+6)/tau)^k)).
     fits = []
     for i, tr in enumerate(trophies):
         ts, ys, pgens, e0 = [], [], [], None
@@ -338,11 +354,13 @@ def forecast_case(case):
     # shape vote per coarse group: the adoption exponent is a property of the
     # process, pooled across the group; each trophy votes with its normalized
     # fit quality (SSE over sum of squared y, so big and small trophies count
-    # alike) at each candidate shape. Only trophies with >=4 usable points
-    # vote: with 3 or fewer points the shape is barely identified (2 params
-    # already fit 2 points exactly) and the vote would be tau-grid
-    # quantization noise. The default 1.5 stands unless another shape wins by
-    # a 2x margin, so a near-tie cannot flip the shape.
+    # alike) at each candidate shape. Trophies with >=3 usable points vote:
+    # three points give one residual degree of freedom each, and the group
+    # pools that weak signal across many trophies; the final case will most
+    # likely hold exactly 3 usable points, so a threshold of 4 would leave
+    # the vote silent there and the default would decide everything. The
+    # default 1.0 stands unless another shape wins by a 2x margin, so a
+    # near-tie cannot flip the shape.
     shape_by_group = {}
 
     def group_shape(role):
@@ -351,7 +369,7 @@ def forecast_case(case):
             return shape_by_group[grp]
         members = [f for f in fits
                    if SHRINK_GROUP.get(f["role"], f["role"]) == grp
-                   and len(f["ts"]) >= 4 and max(f["ys"]) > 0.0]
+                   and len(f["ts"]) >= 3 and max(f["ys"]) > 0.0]
         if not members:
             shape_by_group[grp] = SHAPE_K
             return SHAPE_K
